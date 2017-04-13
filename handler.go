@@ -563,6 +563,9 @@ func (rw *responseStreamer) WriteHeader(status int) {
 }
 
 func (rw *responseStreamer) Write(b []byte) (int, error) {
+	if rw.StatusCode() == 0 {
+		rw.WriteHeader(http.StatusOK) // Copies http.ResponseWriter behavior. This is necessary to make WaitHeaders() succeed if the caller calls Write() but never WriteHeader().
+	}
 	rw.Stream.Write(b)
 	return rw.ResponseWriter.Write(b)
 }
