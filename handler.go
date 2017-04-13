@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/djherbis/stream.v1"
@@ -258,7 +259,7 @@ func (h *Handler) passUpstream(w http.ResponseWriter, r *cacheRequest) {
 	debugf("upstream responded headers in %s", Clock().Sub(t).String())
 
 	// just the headers!
-	res := NewResourceBytes(rw.StatusCode, nil, rw.Header())
+	res := NewResourceBytes(rw.StatusCode(), nil, rw.Header())
 	if !h.isCacheable(res, r) {
 		rdr.Close()
 		debugf("resource is uncacheable")
@@ -534,11 +535,19 @@ func newResponseStreamer(w http.ResponseWriter) *responseStreamer {
 }
 
 type responseStreamer struct {
-	StatusCode int
+	statusCode int64
 	http.ResponseWriter
 	*stream.Stream
 	// C will be closed by WriteHeader to signal the headers' writing.
 	C chan struct{}
+}
+
+func (s *responseStreamer) StatusCode() int {
+	return int(atomic.LoadInt64(&s.statusCode))
+}
+
+func (s *responseStreamer) SetStatusCode(code int) {
+	atomic.StoreInt64(&s.statusCode, int64(code))
 }
 
 // WaitHeaders returns iff and when WriteHeader has been called.
@@ -549,11 +558,14 @@ func (rw *responseStreamer) WaitHeaders() {
 
 func (rw *responseStreamer) WriteHeader(status int) {
 	defer close(rw.C)
-	rw.StatusCode = status
+	rw.SetStatusCode(status)
 	rw.ResponseWriter.WriteHeader(status)
 }
 
 func (rw *responseStreamer) Write(b []byte) (int, error) {
+	if rw.StatusCode() == 0 {
+		rw.WriteHeader(http.StatusOK) // Copies http.ResponseWriter behavior. This is necessary to make WaitHeaders() succeed if the caller calls Write() but never WriteHeader().
+	}
 	rw.Stream.Write(b)
 	return rw.ResponseWriter.Write(b)
 }
@@ -568,12 +580,12 @@ func (rw *responseStreamer) Resource() *Resource {
 		b, err := ioutil.ReadAll(r)
 		r.Close()
 		if err == nil {
-			return NewResourceBytes(rw.StatusCode, b, rw.Header())
+			return NewResourceBytes(rw.StatusCode(), b, rw.Header())
 		}
 	}
 	return &Resource{
 		header:         rw.Header(),
-		statusCode:     rw.StatusCode,
+		statusCode:     rw.StatusCode(),
 		ReadSeekCloser: errReadSeekCloser{err},
 	}
 }
